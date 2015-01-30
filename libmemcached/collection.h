@@ -53,13 +53,6 @@
           if (not ptr) return MEMCACHED_MEMORY_ALLOCATION_FAILURE; \
         }
 
-#if 1 // JOON_SMGET_ERROR_HANDLING
-#define ALLOCATE_ARRAY_WITH_ERROR(root, ptr, type, count, error) \
-        if (not ptr) { \
-          ptr= static_cast<type*>(libmemcached_calloc(root, count, sizeof(type))); \
-          if (not ptr) *error= MEMCACHED_MEMORY_ALLOCATION_FAILURE; \
-        }
-#else
 #define ALLOCATE_ARRAY_OR_RETURN_WITH_ERROR(root, ptr, type, count, error) \
         if (not ptr) { \
           ptr= static_cast<type*>(libmemcached_calloc(root, count, sizeof(type))); \
@@ -68,7 +61,6 @@
             return NULL; \
           } \
         }
-#endif
 
 #define DEALLOCATE_ARRAY(root, ptr) \
         if (ptr) { \
