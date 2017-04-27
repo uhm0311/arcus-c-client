@@ -1141,8 +1141,6 @@ static inline void do_arcus_zk_watch_and_update_cachelist(memcached_st *mc,
     ZOO_LOG_ERROR(("Arcus is null"));
     return;
   }
-  strings.count = 0;
-  strings.data = NULL;
 
   /* Check /arucs_1_7 and /arcus to determine whether we belong to 1.7 or
    * 1.6 cluster.
