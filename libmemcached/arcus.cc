@@ -862,7 +862,11 @@ static inline void do_arcus_update_cachelist(memcached_st *mc,
   memcached_return_t error= MEMCACHED_SUCCESS;
   struct timeval tv_begin, tv_end;
   int msec;
-
+#if PRINT_SERVERINFO
+  for (uint32_t i = 0; i < servercount; i++) {
+    printf("serverinfo[%d]: %s:%d\n", i, serverinfo[i].hostname, serverinfo[i].port);
+  }
+#endif
   ZOO_LOG_DEBUG(("CACHE_LIST=UPDATING, from %s, cache_servers=%d",
                  arcus->zk.ensemble_list, memcached_server_count(mc)));
   gettimeofday(&tv_begin, 0);

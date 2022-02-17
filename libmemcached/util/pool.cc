@@ -830,6 +830,62 @@ memcached_st *memcached_pool_get_master(memcached_pool_st* pool)
   return pool->master;
 }
 
+#if PRINT_EXECUTION_TIME
+static inline double diffTimeval(struct timeval startTime, struct timeval endTime)
+{
+  return (endTime.tv_sec - startTime.tv_sec) + ((endTime.tv_usec - startTime.tv_usec) / 1000000.0);
+}
+#endif
+
+#if ONLY_CONNECTION
+static memcached_return_t memcached_pool_connect(memcached_pool_st *pool)
+{
+#if WAIT_BEFORE_CONNECT
+  char c = 'n';
+  do 
+  {
+    printf("Input \'c\' to continue memcached_pool_connect(): ");
+    c = getchar();
+    while (getchar() != '\n') {}
+  } while (c != 'c');
+#endif
+#if PRINT_EXECUTION_TIME
+  struct timeval startTime, endTime;
+  double elapsed = 0;
+  gettimeofday(&startTime, NULL);
+#endif
+  memcached_return_t rc = MEMCACHED_SUCCESS;
+  for (int i = 0; i <= pool->mc_top; i++)
+  {
+    memcached_st *mc = pool->mc_pool[i];
+
+    for (uint32_t j = 0; j < memcached_server_count(mc); j++) {
+#if ENABLE_REPLICATION
+      if (mc->flags.repl_enabled)
+      {
+        for (uint32_t k = 0; k < mc->rgroups[j].nreplica; k++) 
+        {
+          rc = memcached_connect(mc->rgroups[j].replicas[k]);
+        }
+      }
+      else
+#endif
+      rc = memcached_connect(&(mc->servers[j]));
+
+      if (rc != MEMCACHED_SUCCESS) {
+        return rc;
+      }
+    }
+  }
+#if PRINT_EXECUTION_TIME
+  gettimeofday(&endTime, NULL);
+  elapsed = diffTimeval(startTime, endTime);
+  printf("memcached_pool_connect: %fs\n", elapsed);
+#endif
+  return rc;
+}
+#endif
+
 /**
  * Repopulates the pool based on the master.
  */
@@ -842,7 +898,11 @@ memcached_return_t memcached_pool_repopulate(memcached_pool_st* pool)
 
   (void)pthread_mutex_lock(&pool->master_lock);
   (void)pthread_mutex_lock(&pool->mutex);
-
+#if PRINT_EXECUTION_TIME
+  struct timeval startTime, endTime;
+  double elapsed = 0;
+  gettimeofday(&startTime, NULL);
+#endif
 #ifdef UPDATE_HASH_RING_OF_FETCHED_MC
   pool->increment_ketama_version();
 #endif
@@ -873,7 +933,22 @@ memcached_return_t memcached_pool_repopulate(memcached_pool_st* pool)
 
   (void)pthread_mutex_unlock(&pool->mutex);
   (void)pthread_mutex_unlock(&pool->master_lock);
-
+#if PRINT_EXECUTION_TIME
+  gettimeofday(&endTime, NULL);
+  elapsed = diffTimeval(startTime, endTime);
+  printf("memcached_pool_repopulate: %fs\n", elapsed);
+#endif
+#if SPPED_TEST
+  memcached_return_t rc= memcached_pool_connect(pool);
+  if (rc != MEMCACHED_SUCCESS) {
+    printf("memcached_pool_connect() fail. reason: %s\n", memcached_strerror(NULL, rc));
+  } else {
+    printf("memcached_pool_connect() success.\n");
+  }
+#endif
+#if PRINT_SERVERINFO
+  memcached_pool_print(pool);
+#endif
   return MEMCACHED_SUCCESS;
 }
 
@@ -891,6 +966,11 @@ memcached_return_t memcached_pool_update_cachelist(memcached_pool_st *pool,
 
   (void)pthread_mutex_lock(&pool->master_lock);
   (void)pthread_mutex_lock(&pool->mutex);
+#if PRINT_EXECUTION_TIME
+  struct timeval startTime, endTime;
+  double elapsed = 0;
+  gettimeofday(&startTime, NULL);
+#endif
   rc= memcached_update_cachelist(pool->master, serverinfo, servercount,
                                  &serverlist_changed);
   if (init)
@@ -930,7 +1010,7 @@ memcached_return_t memcached_pool_update_cachelist(memcached_pool_st *pool,
 #else
     pool->increment_version();
 #endif
-
+    printf("pool->mc_top: %d\n", pool->mc_top);
 #ifdef POOL_MORE_CONCURRENCY
     /* move member mcs of used_mc_list to used_bk_list */
     pool->used_bk_head= pool->used_mc_head;
@@ -952,6 +1032,22 @@ memcached_return_t memcached_pool_update_cachelist(memcached_pool_st *pool,
   }
   (void)pthread_mutex_unlock(&pool->mutex);
   (void)pthread_mutex_unlock(&pool->master_lock);
+#if PRINT_EXECUTION_TIME
+  gettimeofday(&endTime, NULL);
+  elapsed = diffTimeval(startTime, endTime);
+  printf("memcached_pool_update_cachelist: %fs\n", elapsed);
+#endif
+#if SPPED_TEST
+  rc= memcached_pool_connect(pool);
+  if (rc != MEMCACHED_SUCCESS) {
+    printf("memcached_pool_connect() fail. reason: %s\n", memcached_strerror(NULL, rc));
+  } else {
+    printf("memcached_pool_connect() success.\n");
+  }
+#endif
+#if PRINT_SERVERINFO
+  memcached_pool_print(pool);
+#endif
   return rc;
 }
 #endif
@@ -1010,5 +1106,69 @@ uint16_t get_memcached_pool_size(memcached_pool_st* pool)
   return pool->max_size;
 }
 
+#if PRINT_POOL
+void memcached_pool_print(memcached_pool_st *pool)
+{
+  memcached_st *master= pool->master;
+  memcached_st *ptr= NULL;
+  uint32_t i, j;
+  int x;
+
+#ifdef ENABLE_REPLICATION
+  if (master->flags.repl_enabled)
+  {
+    for (i= 0; i < memcached_server_count(master); i++)
+    {
+      memcached_rgroup_st group= master->rgroups[i];
+
+      for (j= 0; j < group.nreplica; j++)
+      {
+        memcached_server_st *replica= group.replicas[j];
+
+        printf("MASTER (%s) - %s:%d\n", group.groupname, replica->hostname, replica->port);
+      }
+    }
+
+    for (x= 0; x <= pool->mc_top; x++)
+    {
+      ptr= pool->mc_pool[x];
+
+      for (i= 0; i < memcached_server_count(ptr); i++)
+      {
+        memcached_rgroup_st group= ptr->rgroups[i];
+
+        for (j= 0; j < group.nreplica; j++)
+        {
+          memcached_server_st *replica= group.replicas[j];
+
+          printf("POOL %d (%s) - %s:%d\n", x, group.groupname, replica->hostname, replica->port);
+        }
+      }
+    }
+  }
+  else
+#endif
+  {
+    for (i= 0; i < memcached_server_count(master); i++)
+    {
+      memcached_server_st server= master->servers[i];
+
+      printf("MASTER - %s:%d\n", server.hostname, server.port);
+    }
+
+    for (x= 0; x <= pool->mc_top; x++)
+    {
+      ptr= pool->mc_pool[x];
+
+      for (i= 0; i < memcached_server_count(ptr); i++)
+      {
+        memcached_server_st server= ptr->servers[i];
+
+        printf("POOL %d - %s:%d\n", x, server.hostname, server.port);
+      }
+    }
+  }
+}
 #endif
 
+#endif

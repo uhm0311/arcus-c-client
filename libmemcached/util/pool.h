@@ -137,6 +137,11 @@ memcached_return_t memcached_pool_use_single_server(memcached_pool_st *pool,
                                                     int port);
 #endif
 
+#if PRINT_POOL
+LIBMEMCACHED_API
+void memcached_pool_print(memcached_pool_st *pool);
+#endif
+
 /**
  * Get the size (number of clients) of the pool.
  * @param pool  memcached pool handle.

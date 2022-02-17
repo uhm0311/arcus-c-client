@@ -65,6 +65,26 @@
 #define POOL_UPDATE_SERVERLIST 1
 #define POOL_MORE_CONCURRENCY 1
 
+#define SPPED_TEST 1
+#define PRINT_ARCUS 0
+#define WAIT_BEFORE_CONNECT 0
+
+#if PRINT_ARCUS
+#define PRINT_SERVERINFO 1
+#define PRINT_POOL 1
+#else
+#define PRINT_SERVERINFO 0
+#define PRINT_POOL 0
+#endif
+
+#if SPPED_TEST
+#define PRINT_EXECUTION_TIME 1
+#define ONLY_CONNECTION 1
+#else
+#define PRINT_EXECUTION_TIME 0
+#define ONLY_CONNECTION 0
+#endif
+
 /* Public defines */
 #define MEMCACHED_DEFAULT_PORT 11211
 #define MEMCACHED_MAX_KEY 4001 /* (4000 + 1) We add one to have it null terminated */
