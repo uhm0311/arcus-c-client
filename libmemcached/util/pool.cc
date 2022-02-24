@@ -285,6 +285,11 @@ memcached_st* memcached_pool_st::fetch(memcached_return_t& rc)
 
 memcached_st* memcached_pool_st::fetch(const struct timespec& relative_time, memcached_return_t& rc)
 {
+#ifdef PRINT_MS_IN_FETCH
+  struct timeval tv_begin, tv_end;
+  int msec;
+  gettimeofday(&tv_begin, 0);
+#endif
   rc= MEMCACHED_SUCCESS;
 
   if (pthread_mutex_lock(&mutex))
@@ -347,7 +352,15 @@ memcached_st* memcached_pool_st::fetch(const struct timespec& relative_time, mem
 #endif
 
   pthread_mutex_unlock(&mutex);
+#ifdef PRINT_MS_IN_FETCH
+  gettimeofday(&tv_end, 0);
+  msec= ((tv_end.tv_sec - tv_begin.tv_sec) * 1000)
+      + ((tv_end.tv_usec - tv_begin.tv_usec) / 1000);
 
+  if (ret == NULL or msec >= PRINT_MS_IN_FETCH_THRESHOLD) {
+    ZOO_LOG_WARN(("FETCH=%s in %d ms", ret != NULL ? "SUCCESS" : "FAILED", msec));
+  }
+#endif
   return ret;
 }
 
