@@ -125,14 +125,25 @@ struct memcached_server_info_st
 };
 
 LIBMEMCACHED_API
+#ifdef CACHELIST_ERROR_HANDLING
+memcached_return_t arcus_server_check_for_update(memcached_st *ptr);
+#else
 void arcus_server_check_for_update(memcached_st *ptr);
+#endif
 
 #else /* LIBMEMCACHED_WITH_ZK_INTEGRATION */
 
+#ifdef CACHELIST_ERROR_HANDLING
+static inline memcached_return_t arcus_server_check_for_update(memcached_st *)
+{
+  return MEMCACHED_SUCCESS;
+}
+#else
 static inline void arcus_server_check_for_update(memcached_st *)
 {
   /* Nothing */
 }
 #endif
+#endif /* LIBMEMCACHED_WITH_ZK_INTEGRATION */
 
 #endif /* __LIBMEMCACHED_ARCUS_PRIV_H__ */

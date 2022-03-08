@@ -142,6 +142,10 @@ enum memcached_return_t {
   MEMCACHED_SWITCHOVER,
   MEMCACHED_REPL_SLAVE,
 #endif
+#ifdef CACHELIST_ERROR_HANDLING
+  MEMCACHED_INVALID_HASHRING,
+  MEMCACHED_INVALID_SERVERLIST,
+#endif
   MEMCACHED_MAXIMUM_RETURN /* Always add new error code before */
 };
 

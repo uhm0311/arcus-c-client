@@ -199,7 +199,11 @@ memcached_return_t memcached_behavior_set(memcached_st *ptr,
   case MEMCACHED_BEHAVIOR_SORT_HOSTS:
     {
       ptr->flags.use_sort_hosts= bool(data);
+#ifdef CACHELIST_ERROR_HANDLING
+      return run_distribution(ptr);
+#else
       run_distribution(ptr);
+#endif
 
       break;
     }
@@ -487,9 +491,13 @@ memcached_return_t memcached_behavior_set_distribution(memcached_st *ptr, memcac
     }
 
     ptr->distribution= type;
+#ifdef CACHELIST_ERROR_HANDLING
+    return run_distribution(ptr);
+#else
     run_distribution(ptr);
 
     return MEMCACHED_SUCCESS;
+#endif
   }
 
   return memcached_set_error(*ptr, MEMCACHED_INVALID_ARGUMENTS, MEMCACHED_AT,
@@ -616,7 +624,11 @@ memcached_return_t memcached_bucket_set(memcached_st *self,
 
   if (memcached_failed(rc= memcached_virtual_bucket_create(self, host_map, forward_map, buckets, replicas)))
   {
+#ifdef CACHELIST_ERROR_HANDLING
+    return memcached_behavior_set_distribution(self, old);
+#else
     memcached_behavior_set_distribution(self, old);
+#endif
   }
 
   return rc;

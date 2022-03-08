@@ -131,8 +131,15 @@ static inline uint32_t _generate_hash_wrapper(const memcached_st *ptr, const cha
   }
 }
 
+#ifdef CACHELIST_ERROR_HANDLING
+static inline memcached_return_t _regen_for_auto_eject(memcached_st *ptr)
+#else
 static inline void _regen_for_auto_eject(memcached_st *ptr)
+#endif
 {
+#ifdef CACHELIST_ERROR_HANDLING
+  memcached_return_t rc= MEMCACHED_SUCCESS;
+#endif
   if (_is_auto_eject_host(ptr) && ptr->ketama.next_distribution_rebuild)
   {
     struct timeval now;
@@ -140,21 +147,41 @@ static inline void _regen_for_auto_eject(memcached_st *ptr)
     if (gettimeofday(&now, NULL) == 0 and
         now.tv_sec > ptr->ketama.next_distribution_rebuild)
     {
+#ifdef CACHELIST_ERROR_HANDLING
+      rc= run_distribution(ptr);
+#else
       run_distribution(ptr);
+#endif
     }
   }
+#ifdef CACHELIST_ERROR_HANDLING
+  return rc;
+#endif
 }
 
+#ifdef CACHELIST_ERROR_HANDLING
+memcached_return_t memcached_autoeject(memcached_st *ptr)
+{
+  return _regen_for_auto_eject(ptr);
+}
+#else
 void memcached_autoeject(memcached_st *ptr)
 {
   _regen_for_auto_eject(ptr);
 }
+#endif
 
 uint32_t memcached_generate_hash_with_redistribution(memcached_st *ptr, const char *key, size_t key_length)
 {
   uint32_t hash= _generate_hash_wrapper(ptr, key, key_length);
 
+#ifdef CACHELIST_ERROR_HANDLING
+  if (_regen_for_auto_eject(ptr) != MEMCACHED_SUCCESS) {
+    return UINT32_MAX;
+  }
+#else
   _regen_for_auto_eject(ptr);
+#endif
 
   return dispatch_host(ptr, hash);
 }

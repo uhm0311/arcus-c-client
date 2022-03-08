@@ -317,6 +317,13 @@ const char *memcached_strerror(memcached_st *, memcached_return_t rc)
     return "REPLICATION REPL_SLAVE";
 #endif
 
+#ifdef CACHELIST_ERROR_HANDLING
+  case MEMCACHED_INVALID_HASHRING:
+    return "INVALID HASHRING";
+  
+  case MEMCACHED_INVALID_SERVERLIST:
+    return "INVALID MEMCACHED";
+#endif
   default:
   case MEMCACHED_MAXIMUM_RETURN:
     return "INVALID memcached_return_t";

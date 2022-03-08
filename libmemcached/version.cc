@@ -236,7 +236,13 @@ memcached_return_t memcached_version(memcached_st *ptr)
 {
   if (ptr)
   {
+#ifdef CACHELIST_ERROR_HANDLING
+    if (arcus_server_check_for_update(ptr) != MEMCACHED_SUCCESS) {
+      return memcached_set_error(*ptr, MEMCACHED_INVALID_SERVERLIST, MEMCACHED_AT);
+    }
+#else
     arcus_server_check_for_update(ptr);
+#endif
 
     memcached_return_t rc;
     if ((rc= initialize_query(ptr)) != MEMCACHED_SUCCESS)

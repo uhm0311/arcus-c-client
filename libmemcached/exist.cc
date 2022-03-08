@@ -84,6 +84,11 @@ static memcached_return_t ascii_exist(memcached_st *memc,
 #endif
 
   uint32_t server_key= memcached_generate_hash_with_redistribution(memc, group_key, group_key_length);
+#ifdef CACHELIST_ERROR_HANDLING
+  if (server_key == UINT32_MAX) {
+    return memcached_set_error(*memc, MEMCACHED_INVALID_HASHRING, MEMCACHED_AT);
+  }
+#endif
   memcached_server_write_instance_st instance= memcached_server_instance_fetch(memc, server_key);
 
   /* Send command header */
@@ -145,6 +150,11 @@ static memcached_return_t binary_exist(memcached_st *memc,
   };
 
   uint32_t server_key= memcached_generate_hash_with_redistribution(memc, group_key, group_key_length);
+#ifdef CACHELIST_ERROR_HANDLING
+  if (server_key == UINT32_MAX) {
+    return memcached_set_error(*memc, MEMCACHED_INVALID_HASHRING, MEMCACHED_AT);
+  }
+#endif
   memcached_server_write_instance_st instance= memcached_server_instance_fetch(memc, server_key);
 
   /* write the header */

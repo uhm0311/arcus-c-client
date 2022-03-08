@@ -100,6 +100,10 @@ static inline bool _memcached_init(memcached_st *self)
 #ifdef ENABLE_REPLICATION
   self->flags.repl_enabled= false;
 #endif
+#ifdef CACHELIST_ERROR_HANDLING
+  self->ketama.is_invalid= false;
+  self->ketama.last_update_failed= 0;
+#endif
 
   self->virtual_bucket= NULL;
 

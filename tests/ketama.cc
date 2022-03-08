@@ -209,7 +209,11 @@ test_return_t auto_eject_hosts(memcached_st *trash)
   */
   for (size_t x= 0; x < 99; x++)
   {
+#ifdef CACHELIST_ERROR_HANDLING
+    test_compare(MEMCACHED_SUCCESS, memcached_autoeject(memc));
+#else
     memcached_autoeject(memc);
+#endif 
     uint32_t server_idx= memcached_generate_hash(memc, ketama_test_cases[x].key, strlen(ketama_test_cases[x].key));
     test_true(server_idx != 2);
   }

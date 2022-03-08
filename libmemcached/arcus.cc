@@ -54,7 +54,11 @@ static inline void do_arcus_zk_watcher_cachelist(zhandle_t *zh, int type, int st
  * ARCUS_ZK_OPERATIONS
  */
 static inline void do_arcus_zk_update_cachelist(memcached_st *mc, const struct String_vector *strings);
+#ifdef CACHELIST_ERROR_HANDLING
+static inline memcached_return_t do_arcus_zk_update_cachelist_by_string(memcached_st *mc, char *serverlist, const size_t size);
+#else
 static inline void do_arcus_zk_update_cachelist_by_string(memcached_st *mc, char *serverlist, const size_t size);
+#endif
 static inline void do_arcus_zk_watch_and_update_cachelist(memcached_st *mc, bool *retry);
 
 /**
@@ -418,7 +422,13 @@ arcus_return_t arcus_proxy_connect(memcached_st *mc,
 
   arcus_set_log_stream(mc, proxy->logfile);
   rc= do_arcus_proxy_connect(mc, proxy);
+#ifdef CACHELIST_ERROR_HANDLING
+  if (rc != ARCUS_SUCCESS or arcus_server_check_for_update(mc) != MEMCACHED_SUCCESS) {
+    return ARCUS_ERROR;
+  }
+#else
   arcus_server_check_for_update(mc);
+#endif
 
   return rc;
 }
@@ -725,15 +735,26 @@ static inline arcus_return_t do_arcus_zk_close(memcached_st *mc)
  * PUBLIC API
  * Check for cache server updates.
  */
+#ifdef CACHELIST_ERROR_HANDLING
+memcached_return_t arcus_server_check_for_update(memcached_st *ptr)
+#else
 void arcus_server_check_for_update(memcached_st *ptr)
+#endif
 {
+#ifdef CACHELIST_ERROR_HANDLING
+  memcached_return_t rc= MEMCACHED_SUCCESS;
+#endif
   arcus_st *arcus;
   size_t size;
   uint32_t version;
 
   arcus= static_cast<arcus_st *>(memcached_get_server_manager(ptr));
   if (not arcus) {
+#ifdef CACHELIST_ERROR_HANDLING
+    return rc;
+#else
     return;
+#endif
   }
 
   if (arcus->proxy.data && arcus->proxy.data->version != arcus->proxy.current_version)
@@ -751,10 +772,18 @@ void arcus_server_check_for_update(memcached_st *ptr)
         if (master && master->configure.version == ptr->configure.version)
 #endif
         {
+#ifdef CACHELIST_ERROR_HANDLING
+          rc= do_arcus_zk_update_cachelist_by_string(master, arcus->proxy.data->serverlist, size);
+#else
           do_arcus_zk_update_cachelist_by_string(master, arcus->proxy.data->serverlist, size);
+#endif
         }
       } else {
+#ifdef CACHELIST_ERROR_HANDLING
+        rc= do_arcus_zk_update_cachelist_by_string(ptr, arcus->proxy.data->serverlist, size);
+#else
         do_arcus_zk_update_cachelist_by_string(ptr, arcus->proxy.data->serverlist, size);
+#endif
       }
       arcus->proxy.current_version= version;
     }
@@ -772,10 +801,17 @@ void arcus_server_check_for_update(memcached_st *ptr)
     {
       /* master's cache list was changed, update member's cache list */
       pthread_mutex_lock(&lock_arcus);
+#ifdef CACHELIST_ERROR_HANDLING
+      rc= memcached_pool_update_member(arcus->pool, ptr);
+#else
       (void)memcached_pool_update_member(arcus->pool, ptr);
+#endif
       pthread_mutex_unlock(&lock_arcus);
     }
   }
+#ifdef CACHELIST_ERROR_HANDLING
+  return rc;
+#endif
 }
 
 /**
@@ -854,9 +890,15 @@ static inline int do_add_server_to_cachelist(struct arcus_zk_st *zkinfo, char *n
   return 0;
 }
 
+#ifdef CACHELIST_ERROR_HANDLING
+static inline memcached_return_t do_arcus_update_cachelist(memcached_st *mc,
+                                                           memcached_server_info_st *serverinfo,
+                                                           uint32_t servercount)
+#else
 static inline void do_arcus_update_cachelist(memcached_st *mc,
                                              memcached_server_info_st *serverinfo,
                                              uint32_t servercount)
+#endif
 {
   arcus_st *arcus= static_cast<arcus_st *>(memcached_get_server_manager(mc));
   memcached_return_t error= MEMCACHED_SUCCESS;
@@ -907,17 +949,34 @@ static inline void do_arcus_update_cachelist(memcached_st *mc,
     ZOO_LOG_WARN(("CACHE_LIST=UPDATED, to %s, cache_servers=%d in %d ms",
                   arcus->zk.ensemble_list, mc->number_of_hosts, msec));
   } else {
+#ifdef CACHELIST_ERROR_HANDLING
+    ZOO_LOG_WARN(("CACHE_LIST=UPDATE_FAIL in %d ms. Reason=%s(%d)", msec, memcached_strerror(NULL, error), error));
+#else
     ZOO_LOG_WARN(("CACHE_LIST=UPDATE_FAIL in %d ms", msec));
+#endif
   }
+#ifdef CACHELIST_ERROR_HANDLING
+  return error;
+#endif
 }
 
 /**
  * Rebuild the memcached server list by string
  */
+#ifdef CACHELIST_ERROR_HANDLING
+static inline memcached_return_t do_arcus_zk_update_cachelist_by_string(memcached_st *mc,
+                                                                        char *serverlist,
+                                                                        const size_t size)
+
+#else
 static inline void do_arcus_zk_update_cachelist_by_string(memcached_st *mc,
                                                           char *serverlist,
                                                           const size_t size)
+#endif
 {
+#ifdef CACHELIST_ERROR_HANDLING
+  memcached_return_t rc= MEMCACHED_SUCCESS;
+#endif
   arcus_st *arcus = static_cast<arcus_st *>(memcached_get_server_manager(mc));
   uint32_t servercount= 0;
   memcached_server_info_st *serverinfo;
@@ -925,7 +984,11 @@ static inline void do_arcus_zk_update_cachelist_by_string(memcached_st *mc,
 
   serverinfo = static_cast<memcached_server_info_st *>(libmemcached_malloc(mc, sizeof(memcached_server_info_st)*(size+1)));
   if (not serverinfo) {
+#ifdef CACHELIST_ERROR_HANDLING
+    return rc;
+#else
     return;
+#endif
   }
 
   strncpy(buffer, serverlist, ARCUS_MAX_PROXY_FILE_LENGTH);
@@ -948,10 +1011,17 @@ static inline void do_arcus_zk_update_cachelist_by_string(memcached_st *mc,
   }
 
   pthread_mutex_lock(&lock_arcus);
+#ifdef CACHELIST_ERROR_HANDLING
+  rc= do_arcus_update_cachelist(mc, serverinfo, servercount);
+#else
   do_arcus_update_cachelist(mc, serverinfo, servercount);
+#endif
   pthread_mutex_unlock(&lock_arcus);
 
   libmemcached_free(mc, serverinfo);
+#ifdef CACHELIST_ERROR_HANDLING
+  return rc;
+#endif
 }
 
 static inline int do_arcus_zk_process_reconnect(memcached_st *mc, bool *retry)
@@ -1058,7 +1128,11 @@ static inline void do_arcus_zk_update_cachelist(memcached_st *mc,
           servercount++; /* valid znode name */
         }
       }
+#ifdef CACHELIST_ERROR_HANDLING
+      (void)do_arcus_update_cachelist(mc, serverinfo, servercount);
+#else
       do_arcus_update_cachelist(mc, serverinfo, servercount);
+#endif
       libmemcached_free(mc, serverinfo);
     }
   } while(0);

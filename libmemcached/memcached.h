@@ -194,6 +194,10 @@ struct memcached_st {
     bool weighted;
     time_t next_distribution_rebuild;
     memcached_ketama_info_st *info;
+#ifdef CACHELIST_ERROR_HANDLING
+    bool is_invalid;
+    time_t last_update_failed;
+#endif
   } ketama;
 
   struct memcached_virtual_bucket_t *virtual_bucket;

@@ -573,9 +573,17 @@ static memcached_return_t backoff_handling(memcached_server_write_instance_st se
     if (_is_auto_eject_host(server->root))
     {
       set_last_disconnected_host(server);
+#ifdef CACHELIST_ERROR_HANDLING
+      memcached_return_t error= run_distribution(server->root);
+      if (error == MEMCACHED_SUCCESS) {
+        error= MEMCACHED_SERVER_MARKED_DEAD;
+      }
+      return memcached_set_error(*server, error, MEMCACHED_AT);
+#else
       run_distribution((memcached_st *)server->root);
 
       return memcached_set_error(*server, MEMCACHED_SERVER_MARKED_DEAD, MEMCACHED_AT);
+#endif
     }
 
     server->state= MEMCACHED_SERVER_STATE_IN_TIMEOUT;

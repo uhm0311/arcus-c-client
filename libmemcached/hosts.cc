@@ -250,15 +250,39 @@ static memcached_return_t update_continuum(memcached_st *ptr)
   }
 #endif
 
+#ifdef CACHELIST_ERROR_HANDLING
+  memcached_return_t rc= MEMCACHED_SUCCESS;
+  bool is_auto_ejecting;
+
+  uint64_t is_ketama_weighted= memcached_behavior_get(ptr, MEMCACHED_BEHAVIOR_KETAMA_WEIGHTED);
+  uint32_t points_per_server= (uint32_t) (is_ketama_weighted ? MEMCACHED_POINTS_PER_SERVER_KETAMA
+                                                             : MEMCACHED_POINTS_PER_SERVER);
+  memcached_ketama_info_st *new_ketama_info= NULL;
+
+  size_t size= 0;
+  memcached_continuum_item_st *new_continuum= NULL;
+
+  uint64_t total_weight= 0;
+  uint32_t total_server= 0;
+  uint32_t first_weight= 0;
+  bool all_weights_same= true;
+
+  gettimeofday(&now, NULL);
+#else
   if (gettimeofday(&now, NULL))
   {
     return memcached_set_errno(*ptr, errno, MEMCACHED_AT);
   }
+#endif
 
   list= memcached_server_list(ptr);
 
   /* count live servers (those without a retry delay set) */
+#ifdef CACHELIST_ERROR_HANDLING
+  is_auto_ejecting= _is_auto_eject_host(ptr);
+#else
   bool is_auto_ejecting= _is_auto_eject_host(ptr);
+#endif
   if (is_auto_ejecting)
   {
     live_servers= 0;
@@ -289,29 +313,51 @@ static memcached_return_t update_continuum(memcached_st *ptr)
     return MEMCACHED_SUCCESS;
   }
 
+#ifdef CACHELIST_ERROR_HANDLING
+  new_ketama_info= static_cast<memcached_ketama_info_st*>(libmemcached_malloc(ptr, sizeof(memcached_ketama_info_st)));
+#else
   uint64_t is_ketama_weighted= memcached_behavior_get(ptr, MEMCACHED_BEHAVIOR_KETAMA_WEIGHTED);
   uint32_t points_per_server= (uint32_t) (is_ketama_weighted ? MEMCACHED_POINTS_PER_SERVER_KETAMA
                                                              : MEMCACHED_POINTS_PER_SERVER);
 
   memcached_ketama_info_st *new_ketama_info= static_cast<memcached_ketama_info_st*>(libmemcached_malloc(ptr, sizeof(memcached_ketama_info_st)));
+#endif  
   if (new_ketama_info == 0)
   {
+#ifdef CACHELIST_ERROR_HANDLING
+    rc= MEMCACHED_MEMORY_ALLOCATION_FAILURE;
+    goto continuum_error;
+#else
     return MEMCACHED_MEMORY_ALLOCATION_FAILURE;
+#endif
   }
 
+#ifdef CACHELIST_ERROR_HANDLING
+  size= sizeof(memcached_continuum_item_st) * (live_servers + MEMCACHED_CONTINUUM_ADDITION) * points_per_server;
+  new_continuum= static_cast<memcached_continuum_item_st*>(libmemcached_malloc(ptr, size));
+#else
   size_t size= sizeof(memcached_continuum_item_st) * (live_servers + MEMCACHED_CONTINUUM_ADDITION) * points_per_server;
   memcached_continuum_item_st *new_continuum= static_cast<memcached_continuum_item_st*>(libmemcached_malloc(ptr, size));
+#endif
 
   if (new_continuum == 0)
   {
     libmemcached_free(ptr, new_ketama_info);
+#ifdef CACHELIST_ERROR_HANDLING
+    rc= MEMCACHED_MEMORY_ALLOCATION_FAILURE;
+    goto continuum_error;
+#else
     return MEMCACHED_MEMORY_ALLOCATION_FAILURE;
+#endif
   }
 
+#ifdef CACHELIST_ERROR_HANDLING
+#else
   uint64_t total_weight= 0;
   uint32_t total_server= 0;
   uint32_t first_weight= 0;
   bool all_weights_same= true;
+#endif
   if (is_ketama_weighted)
   {
     for (uint32_t host_index = 0; host_index < memcached_server_count(ptr); ++host_index)
@@ -386,8 +432,14 @@ static memcached_return_t update_continuum(memcached_st *ptr)
 
         if (sort_host_length >= MEMCACHED_MAX_HOST_SORT_LENGTH || sort_host_length < 0)
         {
+#ifdef CACHELIST_ERROR_HANDLING
+          rc= memcached_set_error(*ptr, MEMCACHED_MEMORY_ALLOCATION_FAILURE, MEMCACHED_AT, 
+                                     memcached_literal_param("snprintf(MEMCACHED_MAX_HOST_SORT_LENGTH)"));
+          goto continuum_error;
+#else
           return memcached_set_error(*ptr, MEMCACHED_MEMORY_ALLOCATION_FAILURE, MEMCACHED_AT, 
                                      memcached_literal_param("snprintf(MEMCACHED_MAX_HOST_SORT_LENGTH)"));
+#endif
         }
 
         if (DEBUG)
@@ -439,8 +491,16 @@ static memcached_return_t update_continuum(memcached_st *ptr)
 
         if (sort_host_length >= MEMCACHED_MAX_HOST_SORT_LENGTH || sort_host_length < 0)
         {
+#ifdef CACHELIST_ERROR_HANDLING
+          rc= memcached_set_error(*ptr, MEMCACHED_MEMORY_ALLOCATION_FAILURE, MEMCACHED_AT, 
+                                     memcached_literal_param("snprintf(MEMCACHED_MAX_HOST_SORT_LENGTH)"));
+          libmemcached_free(ptr, new_ketama_info);
+          libmemcached_free(ptr, new_continuum);
+          goto continuum_error;
+#else
           return memcached_set_error(*ptr, MEMCACHED_MEMORY_ALLOCATION_FAILURE, MEMCACHED_AT, 
                                      memcached_literal_param("snprintf(MEMCACHED_MAX_HOST_SORT_LENGTH)"));
+#endif
         }
 
         if (is_ketama_weighted)
@@ -515,7 +575,17 @@ static memcached_return_t update_continuum(memcached_st *ptr)
   }
 #endif
 
+#ifdef CACHELIST_ERROR_HANDLING
+  ptr->ketama.is_invalid= false;
+  ptr->ketama.last_update_failed= 0;
+#endif
   return MEMCACHED_SUCCESS;
+#ifdef CACHELIST_ERROR_HANDLING
+continuum_error:
+  ptr->ketama.is_invalid= true;
+  ptr->ketama.last_update_failed= time(NULL);
+  return rc;
+#endif
 }
 
 #ifdef ENABLE_REPLICATION
@@ -527,7 +597,10 @@ static memcached_return_t update_continuum_based_on_rgroups(memcached_st *ptr)
   uint32_t pointer_per_server= MEMCACHED_POINTS_PER_SERVER;
   uint32_t pointer_per_hash= 1;
   uint32_t live_servers= 0;
+#ifdef CACHELIST_ERROR_HANDLING
+#else
   struct timeval now;
+#endif
 
 #ifdef LIBMEMCACHED_WITH_ZK_INTEGRATION
   arcus_st *arcus= static_cast<arcus_st *>(memcached_get_server_manager(ptr));
@@ -542,10 +615,25 @@ static memcached_return_t update_continuum_based_on_rgroups(memcached_st *ptr)
   }
 #endif
 
+#ifdef CACHELIST_ERROR_HANDLING
+  memcached_return_t rc= MEMCACHED_SUCCESS;
+
+  uint64_t is_ketama_weighted= memcached_behavior_get(ptr, MEMCACHED_BEHAVIOR_KETAMA_WEIGHTED);
+  uint32_t points_per_server= (uint32_t) (is_ketama_weighted ? MEMCACHED_POINTS_PER_SERVER_KETAMA
+                                                             : MEMCACHED_POINTS_PER_SERVER);
+  memcached_ketama_info_st *new_ketama_info= NULL;
+
+  size_t size= 0;
+  memcached_continuum_item_st *new_continuum= NULL;
+
+  uint64_t total_weight= 0;
+  bool all_weights_same= true;
+#else
   if (gettimeofday(&now, NULL))
   {
     return memcached_set_errno(*ptr, errno, MEMCACHED_AT);
   }
+#endif
 
   assert(_is_auto_eject_host(ptr) != true);
   live_servers= memcached_server_count(ptr);
@@ -555,27 +643,49 @@ static memcached_return_t update_continuum_based_on_rgroups(memcached_st *ptr)
   }
   list= memcached_rgroup_list(ptr);
 
+#ifdef CACHELIST_ERROR_HANDLING
+  new_ketama_info= static_cast<memcached_ketama_info_st*>(libmemcached_malloc(ptr, sizeof(memcached_ketama_info_st)));
+#else
   uint64_t is_ketama_weighted= memcached_behavior_get(ptr, MEMCACHED_BEHAVIOR_KETAMA_WEIGHTED);
   uint32_t points_per_server= (uint32_t) (is_ketama_weighted ? MEMCACHED_POINTS_PER_SERVER_KETAMA
                                                              : MEMCACHED_POINTS_PER_SERVER);
 
   memcached_ketama_info_st *new_ketama_info= static_cast<memcached_ketama_info_st*>(libmemcached_malloc(ptr, sizeof(memcached_ketama_info_st)));
+#endif
   if (new_ketama_info == 0)
   {
+#ifdef CACHELIST_ERROR_HANDLING
+    rc= MEMCACHED_MEMORY_ALLOCATION_FAILURE;
+    goto continuum_error;
+#else
     return MEMCACHED_MEMORY_ALLOCATION_FAILURE;
+#endif
   }
 
+#ifdef CACHELIST_ERROR_HANDLING
+  size= sizeof(memcached_continuum_item_st) * (live_servers + MEMCACHED_CONTINUUM_ADDITION) * points_per_server;
+  new_continuum= static_cast<memcached_continuum_item_st*>(libmemcached_malloc(ptr, size));
+#else
   size_t size= sizeof(memcached_continuum_item_st) * (live_servers + MEMCACHED_CONTINUUM_ADDITION) * points_per_server;
   memcached_continuum_item_st *new_continuum= static_cast<memcached_continuum_item_st*>(libmemcached_malloc(ptr, size));
+#endif
 
   if (new_continuum == 0)
   {
     libmemcached_free(ptr, new_ketama_info);
+#ifdef CACHELIST_ERROR_HANDLING
+    rc= MEMCACHED_MEMORY_ALLOCATION_FAILURE;
+    goto continuum_error;
+#else
     return MEMCACHED_MEMORY_ALLOCATION_FAILURE;
+#endif
   }
 
+#ifdef CACHELIST_ERROR_HANDLING
+#else
   uint64_t total_weight= 0;
   bool all_weights_same= true;
+#endif
   if (is_ketama_weighted)
   {
     for (uint32_t host_index = 0; host_index < memcached_server_count(ptr); ++host_index)
@@ -629,8 +739,16 @@ static memcached_return_t update_continuum_based_on_rgroups(memcached_st *ptr)
                                  pointer_index);
       if (sort_host_length >= MEMCACHED_MAX_HOST_SORT_LENGTH || sort_host_length < 0)
       {
+#ifdef CACHELIST_ERROR_HANDLING
+        rc= memcached_set_error(*ptr, MEMCACHED_MEMORY_ALLOCATION_FAILURE, MEMCACHED_AT,
+                                   memcached_literal_param("snprintf(MEMCACHED_MAX_HOST_SORT_LENGTH)"));
+        libmemcached_free(ptr, new_ketama_info);
+        libmemcached_free(ptr, new_continuum);
+        goto continuum_error;
+#else
         return memcached_set_error(*ptr, MEMCACHED_MEMORY_ALLOCATION_FAILURE, MEMCACHED_AT,
                                    memcached_literal_param("snprintf(MEMCACHED_MAX_HOST_SORT_LENGTH)"));
+#endif
       }
 
       if (DEBUG)
@@ -708,7 +826,17 @@ static memcached_return_t update_continuum_based_on_rgroups(memcached_st *ptr)
   }
 #endif
 
+#ifdef CACHELIST_ERROR_HANDLING
+  ptr->ketama.is_invalid= false;
+  ptr->ketama.last_update_failed= 0;
+#endif
   return MEMCACHED_SUCCESS;
+#ifdef CACHELIST_ERROR_HANDLING
+continuum_error:
+  ptr->ketama.is_invalid= true;
+  ptr->ketama.last_update_failed= time(NULL);
+  return rc;
+#endif
 }
 #endif
 

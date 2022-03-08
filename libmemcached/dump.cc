@@ -29,7 +29,13 @@ static memcached_return_t ascii_dump(memcached_st *ptr, memcached_dump_fn *callb
 {
   memcached_return_t rc= MEMCACHED_SUCCESS;
 
+#ifdef CACHELIST_ERROR_HANDLING
+  if (arcus_server_check_for_update(ptr) != MEMCACHED_SUCCESS) {
+    return memcached_set_error(*ptr, MEMCACHED_INVALID_SERVERLIST, MEMCACHED_AT);
+  }
+#else
   arcus_server_check_for_update(ptr);
+#endif
 
   for (uint32_t server_key= 0; server_key < memcached_server_count(ptr); server_key++)
   {

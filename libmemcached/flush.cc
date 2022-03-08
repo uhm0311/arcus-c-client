@@ -67,7 +67,13 @@ memcached_return_t memcached_flush_by_prefix(memcached_st *ptr,
 {
   memcached_return_t rc;
 
+#ifdef CACHELIST_ERROR_HANDLING
+  if (arcus_server_check_for_update(ptr) != MEMCACHED_SUCCESS) {
+    return memcached_set_error(*ptr, MEMCACHED_INVALID_SERVERLIST, MEMCACHED_AT);
+  }
+#else
   arcus_server_check_for_update(ptr);
+#endif
 
   if (memcached_failed(rc= initialize_query(ptr)))
   {
@@ -116,7 +122,13 @@ memcached_return_t memcached_flush(memcached_st *ptr, time_t expiration)
 {
   memcached_return_t rc;
 
+#ifdef CACHELIST_ERROR_HANDLING
+  if (arcus_server_check_for_update(ptr) != MEMCACHED_SUCCESS) {
+    return memcached_set_error(*ptr, MEMCACHED_INVALID_SERVERLIST, MEMCACHED_AT);
+  }
+#else
   arcus_server_check_for_update(ptr);
+#endif
 
   if (memcached_failed(rc= initialize_query(ptr)))
   {

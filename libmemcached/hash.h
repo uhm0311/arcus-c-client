@@ -59,7 +59,11 @@ LIBMEMCACHED_LOCAL
 uint32_t memcached_generate_hash_with_redistribution(memcached_st *ptr, const char *key, size_t key_length);
 
 LIBMEMCACHED_API
+#ifdef CACHELIST_ERROR_HANDLING
+memcached_return_t memcached_autoeject(memcached_st *ptr);
+#else
 void memcached_autoeject(memcached_st *ptr);
+#endif
 
 LIBMEMCACHED_API
   const char * libmemcached_string_hash(memcached_hash_t type);

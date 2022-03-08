@@ -65,8 +65,16 @@
 #include <memory>
 
 #ifdef LIBMEMCACHED_WITH_ZK_INTEGRATION
+#ifdef CACHELIST_ERROR_HANDLING
+static memcached_return_t member_update_cachelist(memcached_st **memc,
+                                                  memcached_pool_st* pool);
+#else
 static memcached_return_t member_update_cachelist(memcached_st *memc,
                                                   memcached_pool_st* pool);
+#endif
+#endif
+#ifdef CACHELIST_ERROR_HANDLING
+static void *pool_thread_main(void *arg);
 #endif
 
 struct memcached_pool_st
@@ -75,6 +83,10 @@ struct memcached_pool_st
   pthread_mutex_t mutex;
   pthread_cond_t cond;
   memcached_st *master;
+#ifdef CACHELIST_ERROR_HANDLING
+  memcached_st *invalid_mc_head;
+  memcached_st *invalid_mc_tail;
+#endif
   memcached_st *used_mc_head;
   memcached_st *used_mc_tail;
   memcached_st *used_bk_head;
@@ -88,9 +100,17 @@ struct memcached_pool_st
   uint32_t cur_size;
   bool _owns_master;
   struct timespec _timeout;
+#ifdef CACHELIST_ERROR_HANDLING
+  pthread_t _tid;
+  bool _thread_running;
+#endif
 
   memcached_pool_st(memcached_st *master_arg, size_t max_arg) :
     master(master_arg),
+#ifdef CACHELIST_ERROR_HANDLING
+    invalid_mc_head(NULL),
+    invalid_mc_tail(NULL),
+#endif
     used_mc_head(NULL),
     used_mc_tail(NULL),
     used_bk_head(NULL),
@@ -107,6 +127,9 @@ struct memcached_pool_st
 #endif
     cur_size(0),
     _owns_master(false)
+#ifdef CACHELIST_ERROR_HANDLING
+    ,_thread_running(true)
+#endif
   {
     pthread_mutex_init(&master_lock, NULL);
     pthread_mutex_init(&mutex, NULL);
@@ -129,6 +152,14 @@ struct memcached_pool_st
 
   ~memcached_pool_st()
   {
+#ifdef CACHELIST_ERROR_HANDLING
+    while (invalid_mc_head)
+    {
+      memcached_st *mc= invalid_mc_head;
+      invalid_mc_head= mc->mc_next;
+      memcached_free(mc);
+    }
+#endif
     while (used_bk_head)
     {
       memcached_st *mc= used_bk_head;
@@ -156,6 +187,10 @@ struct memcached_pool_st
     pthread_cond_destroy(&cond);
     delete [] mc_pool;
     delete [] bk_pool;
+#ifdef CACHELIST_ERROR_HANDLING
+    _thread_running= false;
+    pthread_join(_tid, NULL);
+#endif
     if (_owns_master)
     {
       memcached_free(master);
@@ -195,6 +230,52 @@ struct memcached_pool_st
   }
 };
 
+#ifdef CACHELIST_ERROR_HANDLING
+static memcached_st *invalid_list_get(memcached_pool_st* pool)
+{
+  memcached_st *mc;
+
+  if ((mc= pool->invalid_mc_head) != NULL)
+  {
+    pool->invalid_mc_head= mc->mc_next;
+    if (pool->invalid_mc_head == NULL) {
+      pool->invalid_mc_tail= NULL;
+    }
+    (void)member_update_cachelist(&mc, pool);
+    return mc;
+  }
+  return mc;
+}
+
+static void invalid_list_add(memcached_pool_st* pool, bool head, memcached_st *mc)
+{
+  if (head)
+  {
+    mc->mc_next= pool->invalid_mc_head;
+    pool->invalid_mc_head= mc;
+    if (pool->invalid_mc_tail == NULL) {
+      pool->invalid_mc_tail= mc;
+    }
+  }
+  else /* tail */
+  {
+    mc->mc_next= NULL;
+    if (pool->invalid_mc_tail) {
+      pool->invalid_mc_tail->mc_next= mc;
+    } else {
+      pool->invalid_mc_head= mc;
+    }
+    pool->invalid_mc_tail= mc;
+  }
+
+  if (pool->wait_count > 0)
+  {
+    /* we might have people waiting for a connection.. wake them up :-) */
+    pthread_cond_broadcast(&pool->cond);
+  }
+}
+#endif
+
 /*
  * used mc list functions
  */
@@ -202,6 +283,9 @@ static memcached_st *mc_list_get(memcached_pool_st* pool)
 {
   memcached_st *mc;
 
+#ifdef CACHELIST_ERROR_HANDLING
+do_action:
+#endif
 #ifdef POOL_MORE_CONCURRENCY
 #ifdef LIBMEMCACHED_WITH_ZK_INTEGRATION
   if ((mc= pool->used_bk_head) != NULL)
@@ -210,7 +294,15 @@ static memcached_st *mc_list_get(memcached_pool_st* pool)
     if (pool->used_bk_head == NULL) {
       pool->used_bk_tail= NULL;
     }
+#ifdef CACHELIST_ERROR_HANDLING
+    if (member_update_cachelist(&mc, pool) != MEMCACHED_SUCCESS)
+    {
+      invalid_list_add(pool, false, mc);
+      goto do_action;
+    }
+#else
     (void)member_update_cachelist(mc, pool);
+#endif
     return mc;
   }
 #endif
@@ -255,12 +347,23 @@ static void mc_list_add(memcached_pool_st* pool, bool head, memcached_st *mc)
 
 static memcached_st *mc_pool_get(memcached_pool_st* pool)
 {
+#ifdef CACHELIST_ERROR_HANDLING
+do_action:
+#endif
 #ifdef POOL_MORE_CONCURRENCY
 #ifdef LIBMEMCACHED_WITH_ZK_INTEGRATION
   if (pool->bk_top > -1)
   {
     memcached_st *mc= pool->bk_pool[pool->bk_top--];
+#ifdef CACHELIST_ERROR_HANDLING
+    if (member_update_cachelist(&mc, pool) != MEMCACHED_SUCCESS)
+    {
+      invalid_list_add(pool, false, mc);
+      goto do_action;
+    }
+#else
     (void)member_update_cachelist(mc, pool);
+#endif
     return mc;
   }
 #endif
@@ -320,6 +423,19 @@ bool memcached_pool_st::init(uint32_t initial)
     delete [] mc_pool;
     return false;
   }
+
+#ifdef CACHELIST_ERROR_HANDLING
+  pthread_attr_t attr;
+  pthread_attr_init(&attr);
+  pthread_attr_setscope(&attr, PTHREAD_SCOPE_SYSTEM);
+  if (pthread_create(&_tid, &attr, pool_thread_main, (void*)this) != 0) 
+  {
+    ZOO_LOG_ERROR(("Cannot create pool manager thread: %s(%d)", strerror(errno), errno));
+    delete [] mc_pool;
+    delete [] bk_pool;
+    return false;
+  }
+#endif
 
   /*
     Try to create the initial size of the pool. An allocation failure at
@@ -418,6 +534,13 @@ memcached_st* memcached_pool_st::fetch(memcached_return_t& rc)
 
 memcached_st* memcached_pool_st::fetch(const struct timespec& relative_time, memcached_return_t& rc)
 {
+#ifdef CACHELIST_ERROR_HANDLING
+  if (master->ketama.is_invalid)
+  {
+    rc= MEMCACHED_INVALID_HASHRING;
+    return NULL;
+  }
+#endif
   rc= MEMCACHED_SUCCESS;
 
   if (pthread_mutex_lock(&mutex))
@@ -445,8 +568,21 @@ memcached_st* memcached_pool_st::fetch(const struct timespec& relative_time, mem
         rc= MEMCACHED_MEMORY_ALLOCATION_FAILURE;
         break;
       }
+#ifdef CACHELIST_ERROR_HANDLING
+      continue;
+#endif
     }
+#ifdef CACHELIST_ERROR_HANDLING
+    if ((ret= invalid_list_get(this)) != NULL)
+    {
+      if (member_update_cachelist(&ret, this) != MEMCACHED_SUCCESS) {
+        rc= MEMCACHED_INVALID_SERVERLIST;
+      }
+      break;
+    }
+#else
     else /* cur_size == max_size */
+#endif
     {
       if (relative_time.tv_sec == 0 and relative_time.tv_nsec == 0)
       {
@@ -514,13 +650,24 @@ bool memcached_pool_st::release(memcached_st *released, memcached_return_t& rc)
 #ifdef LIBMEMCACHED_WITH_ZK_INTEGRATION
   else if (compare_ketama_version(released) == false)
   {
+#ifdef CACHELIST_ERROR_HANDLING
+    if (member_update_cachelist(&released, this) != MEMCACHED_SUCCESS)
+    {
+      invalid_list_add(this, false, released);
+      goto do_action;
+    }
+#else
     (void)member_update_cachelist(released, this);
+#endif
   }
 #endif
 #endif
 
   mc_list_add(this, true, released); /* true: to the head side */
 
+#ifdef CACHELIST_ERROR_HANDLING
+do_action:
+#endif
   (void)pthread_mutex_unlock(&mutex);
 
   return true;
@@ -730,6 +877,33 @@ void memcached_pool_unlock(memcached_pool_st* pool)
 /*
  * static functions
  */
+#ifdef CACHELIST_ERROR_HANDLING
+static memcached_return_t member_update_cachelist(memcached_st **memc,
+                                                  memcached_pool_st* pool)
+{
+  memcached_st *clone= memcached_clone(NULL, *memc);
+  if (clone == NULL)
+  {
+    return MEMCACHED_MEMORY_ALLOCATION_FAILURE;
+  }
+  memcached_return_t rc= memcached_update_cachelist_with_master(*memc, pool->master);
+  if (rc == MEMCACHED_SUCCESS)
+  {
+    memcached_free(clone);
+#ifdef UPDATE_HASH_RING_OF_FETCHED_MC
+    (*memc)->configure.ketama_version= pool->ketama_version();
+#else
+    (*memc)->configure.version= pool->version();
+#endif
+  }
+  else
+  {
+    memcached_free(*memc);
+    *memc= clone;
+  }
+  return rc;
+}
+#else
 static memcached_return_t member_update_cachelist(memcached_st *memc,
                                                   memcached_pool_st* pool)
 {
@@ -746,6 +920,7 @@ static memcached_return_t member_update_cachelist(memcached_st *memc,
   }
   return rc;
 }
+#endif
 
 static int mc_list_remove_all(memcached_pool_st* pool)
 {
@@ -767,6 +942,9 @@ static int mc_list_remove_all(memcached_pool_st* pool)
 static void mc_list_update_cachelist(memcached_pool_st* pool)
 {
   memcached_st *mc;
+#ifdef CACHELIST_ERROR_HANDLING
+  memcached_return_t rc;
+#endif
 
 #ifdef POOL_MORE_CONCURRENCY
   while (pool->used_bk_head)
@@ -780,17 +958,50 @@ static void mc_list_update_cachelist(memcached_pool_st* pool)
     (void)pthread_mutex_unlock(&pool->mutex);
 
     /* update chachelist without pool lock */
+#ifdef CACHELIST_ERROR_HANDLING
+    rc= member_update_cachelist(&mc, pool);
+#else
     (void)member_update_cachelist(mc, pool);
+#endif
     
     (void)pthread_mutex_lock(&pool->mutex);
     /* push the mc into mc_list */
+#ifdef CACHELIST_ERROR_HANDLING
+    if (rc != MEMCACHED_SUCCESS)
+    {
+      invalid_list_add(pool, false, mc);
+    }
+    else
+#endif
     mc_list_add(pool, false, mc); /* false: to the tail side */
   }
 #else
   mc= pool->used_mc_head;
+#ifdef CACHELIST_ERROR_HANDLING
+  memcached_st *prev= NULL;
+#endif
   while (mc)
   {
+#ifdef CACHELIST_ERROR_HANDLING
+    if (member_update_cachelist(&mc, pool) != MEMCACHED_SUCCESS)
+    {
+      invalid_list_add(pool, false, mc);
+      if (prev != NULL)
+      {
+        prev->mc_next= mc->mc_next;
+      }
+      else
+      {
+        pool->used_mc_head= mc->mc_next;
+      }
+    }
+    else
+    {
+      prev= mc;
+    }
+#else
     (void)member_update_cachelist(mc, pool);
+#endif
     mc= mc->mc_next;
   }
 #endif
@@ -800,6 +1011,9 @@ static void mc_pool_update_cachelist(memcached_pool_st* pool)
 {
 #ifdef POOL_MORE_CONCURRENCY
   memcached_st *mc;
+#ifdef CACHELIST_ERROR_HANDLING
+  memcached_return_t rc;
+#endif
 
   while (pool->bk_top > -1)
   {
@@ -808,16 +1022,40 @@ static void mc_pool_update_cachelist(memcached_pool_st* pool)
     (void)pthread_mutex_unlock(&pool->mutex);
 
     /* update chachelist without pool lock */
+#ifdef CACHELIST_ERROR_HANDLING
+    rc= member_update_cachelist(&mc, pool);
+#else
     (void)member_update_cachelist(mc, pool);
+#endif
     
     (void)pthread_mutex_lock(&pool->mutex);
     /* push the mc into mc_pool */
+#ifdef CACHELIST_ERROR_HANDLING
+    if (rc != MEMCACHED_SUCCESS)
+    {
+      invalid_list_add(pool, false, mc);
+    }
+    else
+#endif
     mc_pool_add(pool, mc);
   }
 #else
   for (int xx= 0; xx <= pool->mc_top; ++xx)
   {
+#ifdef CACHELIST_ERROR_HANDLING
+    if (member_update_cachelist(&pool->mc_pool[xx], pool) != MEMCACHED_SUCCESS)
+    {
+      invalid_list_add(pool, false, pool->mc_pool[xx]);
+      for (int yy= xx; yy < pool->mc_top; ++yy)
+      {
+        pool->mc_pool[yy]= pool->mc_pool[yy + 1];
+      }
+      pool->mc_top--;
+      xx--;
+    }
+#else
     (void)member_update_cachelist(pool->mc_pool[xx], pool);
+#endif
   }
 #endif
 }
@@ -893,6 +1131,14 @@ memcached_return_t memcached_pool_update_cachelist(memcached_pool_st *pool,
   (void)pthread_mutex_lock(&pool->mutex);
   rc= memcached_update_cachelist(pool->master, serverinfo, servercount,
                                  &serverlist_changed);
+#ifdef CACHELIST_ERROR_HANDLING
+  if (rc != MEMCACHED_SUCCESS)
+  {
+    (void)pthread_mutex_unlock(&pool->mutex);
+    (void)pthread_mutex_unlock(&pool->master_lock);
+    return rc;
+  }
+#endif
   if (init)
   {
 #ifdef UPDATE_HASH_RING_OF_FETCHED_MC
@@ -967,7 +1213,11 @@ memcached_return_t memcached_pool_update_member(memcached_pool_st* pool, memcach
   if (mc->configure.version != pool->version())
 #endif
   {
+#ifdef CACHELIST_ERROR_HANDLING
+    rc= member_update_cachelist(&mc, pool);
+#else
     (void)member_update_cachelist(mc, pool);
+#endif
   }
   (void)pthread_mutex_unlock(&pool->mutex);
   return rc;
@@ -1012,3 +1262,26 @@ uint16_t get_memcached_pool_size(memcached_pool_st* pool)
 
 #endif
 
+#ifdef CACHELIST_ERROR_HANDLING
+static void *pool_thread_main(void *arg)
+{
+  memcached_pool_st *pool= (memcached_pool_st*)arg;
+  while (pool->_thread_running)
+  {
+    if (pool->master->ketama.is_invalid
+        && pool->master->ketama.last_update_failed
+        && time(NULL) > pool->master->ketama.last_update_failed)
+    {
+      (void)pthread_mutex_lock(&pool->master_lock);
+      run_distribution(pool->master);
+      (void)pthread_mutex_unlock(&pool->master_lock);
+    }
+    if (pool->_thread_running)
+    {
+      sleep(1);
+    }
+  }
+
+  return NULL;
+}
+#endif

@@ -487,7 +487,14 @@ memcached_stat_st *memcached_stat(memcached_st *self, char *args, memcached_retu
 
   memcached_return_t rc;
   
+#ifdef CACHELIST_ERROR_HANDLING
+  if (arcus_server_check_for_update(self) != MEMCACHED_SUCCESS) {
+    *error= memcached_set_error(*self, MEMCACHED_INVALID_SERVERLIST, MEMCACHED_AT);
+    return NULL;
+  }
+#else
   arcus_server_check_for_update(self);
+#endif
     
   if (memcached_failed(rc= initialize_query(self)))
   {

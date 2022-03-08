@@ -66,7 +66,13 @@ static memcached_return_t text_incr_decr(memcached_st *ptr,
                                          const time_t expiration,
                                          uint64_t *value)
 {
+#ifdef CACHELIST_ERROR_HANDLING
+  if (arcus_server_check_for_update(ptr) != MEMCACHED_SUCCESS) {
+    return memcached_set_error(*ptr, MEMCACHED_INVALID_SERVERLIST, MEMCACHED_AT);
+  }
+#else
   arcus_server_check_for_update(ptr);
+#endif
 
   if (memcached_failed(memcached_key_test(*ptr, (const char **)&key, &key_length, 1)))
   {
@@ -106,6 +112,11 @@ static memcached_return_t text_incr_decr(memcached_st *ptr,
   };
 
   uint32_t server_key= memcached_generate_hash_with_redistribution(ptr, group_key, group_key_length);
+#ifdef CACHELIST_ERROR_HANDLING
+  if (server_key == UINT32_MAX) {
+    return memcached_set_error(*ptr, MEMCACHED_INVALID_HASHRING, MEMCACHED_AT);
+  }
+#endif
   memcached_server_write_instance_st instance= memcached_server_instance_fetch(ptr, server_key);
 
 #ifdef ENABLE_REPLICATION
@@ -176,7 +187,13 @@ static memcached_return_t binary_incr_decr(memcached_st *ptr, uint8_t cmd,
 {
   bool no_reply= ptr->flags.no_reply;
 
+#ifdef CACHELIST_ERROR_HANDLING
+  if (arcus_server_check_for_update(ptr) != MEMCACHED_SUCCESS) {
+    return memcached_set_error(*ptr, MEMCACHED_INVALID_SERVERLIST, MEMCACHED_AT);
+  }
+#else
   arcus_server_check_for_update(ptr);
+#endif
 
   if (memcached_server_count(ptr) == 0)
     return memcached_set_error(*ptr, MEMCACHED_NO_SERVERS, MEMCACHED_AT);
@@ -209,6 +226,11 @@ static memcached_return_t binary_incr_decr(memcached_st *ptr, uint8_t cmd,
   };
 
   uint32_t server_key= memcached_generate_hash_with_redistribution(ptr, group_key, group_key_length);
+#ifdef CACHELIST_ERROR_HANDLING
+  if (server_key == UINT32_MAX) {
+    return memcached_set_error(*ptr, MEMCACHED_INVALID_HASHRING, MEMCACHED_AT);
+  }
+#endif
   memcached_server_write_instance_st instance= memcached_server_instance_fetch(ptr, server_key);
 
 #ifdef ENABLE_REPLICATION
