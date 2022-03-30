@@ -485,7 +485,7 @@ void arcus_list_element_piped_insert(memcached_st *memc)
     assert(MEMCACHED_ALL_SUCCESS == piped_rc);
 
     // 각 key에 대한 결과를 확인한다.
-    for (size_t i=0; i<maxcount; i++)</nowiki>
+    for (size_t i=0; i<maxcount; i++)
     {
         assert(MEMCACHED_STORED == results[i] or MEMCACHED_CREATED_STORED == results[i]);
     }
