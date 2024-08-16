@@ -38,6 +38,84 @@ enum memcached_storage_action_t {
   CAS_OP
 };
 
+typedef struct node {
+  size_t value;
+  node *next;
+} node;
+
+static inline bool insert_value(node **head_ptr, node **tail_ptr, size_t value)
+{
+  if (head_ptr == NULL or tail_ptr == NULL)
+  {
+    return false;
+  }
+
+  node *head= *head_ptr;
+  node *tail= *tail_ptr;
+
+  if (head == NULL)
+  {
+    head= (node *)malloc(sizeof(node));
+    head->value= value;
+    head->next= NULL;
+    tail= head;
+
+    *head_ptr= head;
+    *tail_ptr= tail;
+  }
+  else
+  {
+    tail->next= (node *)malloc(sizeof(node));
+    tail= tail->next;
+    tail->value= value;
+    tail->next= NULL;
+
+    *tail_ptr= tail;
+  }
+
+  return true;
+}
+
+static inline bool free_nodes(node **head_ptr, node **tail_ptr)
+{
+  if (head_ptr == NULL or tail_ptr == NULL)
+  {
+    return false;
+  }
+
+  node *curr= *head_ptr;
+  if (curr == NULL)
+  {
+    return false;
+  }
+
+  for (node *next= curr->next; curr != NULL; curr= next)
+  {
+    free(curr);
+  }
+  *head_ptr= *tail_ptr= NULL;
+
+  return true;
+}
+
+static inline bool clear_failed_flags(memcached_server_write_instance_st *failed_list_ptr)
+{
+  memcached_server_write_instance_st curr= *failed_list_ptr;
+  if (curr == NULL)
+  {
+    return false;
+  }
+
+  for (memcached_server_write_instance_st next= curr->next_failed; curr != NULL; curr= next)
+  {
+    curr->send_failed= false;
+    curr->recv_failed= false;
+  }
+  *failed_list_ptr= NULL;
+
+  return true;
+}
+
 /* Inline this */
 static inline const char *storage_op_string(memcached_storage_action_t verb)
 {
@@ -595,9 +673,10 @@ static memcached_return_t memcached_bulk_storage(memcached_st *ptr,
                                                 : (failure_occurred ? MEMCACHED_SOME_ERRORS \
                                                                     : MEMCACHED_SUCCESS))
 
-  size_t min_index= -1;
-  size_t max_index= -1;
-  bool send_needed= false;
+  node *send_needed_head= NULL;
+  node *send_needed_tail= NULL;
+
+#define FOR_EACH_NODES(h) for (node *curr= h; curr != NULL; curr= curr->next)
 
   for (size_t i= 0; i < number_of_req; i++)
   {
@@ -615,17 +694,11 @@ static memcached_return_t memcached_bulk_storage(memcached_st *ptr,
     else
     {
       rc_arr_ret[i]= MEMCACHED_MAXIMUM_RETURN;
-
-      if (send_needed == false)
-      {
-        send_needed= true;
-        min_index= i;
-      }
-      max_index= i;
+      insert_value(&send_needed_head, &send_needed_tail, i);
     }
   }
 
-  if (send_needed== false)
+  if (send_needed_head == NULL)
   {
     return MEMCACHED_FAILURE;
   }
@@ -647,26 +720,18 @@ static memcached_return_t memcached_bulk_storage(memcached_st *ptr,
     instance= memcached_server_instance_fetch(ptr, server_key);
   }
 
-  bool sent_ever= false;
-  size_t min_sent_index= -1;
-  size_t max_sent_index= -1;
-
-#define FOR_INDEX(from, to) for (size_t i= from; i <= to; i++)
+  node *sent_head= NULL;
+  node *sent_tail= NULL;
+  memcached_server_write_instance_st failed_list= NULL;
 
 #ifdef ENABLE_REPLICATION
 do_action:
 #endif
-
-  memcached_server_write_instance_st failed_instances= NULL;
   ptr->flags.bulked= true;
 
-  FOR_INDEX(min_index, max_index)
+  FOR_EACH_NODES (send_needed_head)
   {
-    if (rc_arr_ret[i] != MEMCACHED_MAXIMUM_RETURN)
-    {
-      continue;
-    }
-
+    size_t i= curr->value;
     FETCH_WRITE_INSTANCE_IF_NEEDED();
 
     if (instance->send_failed)
@@ -688,48 +753,33 @@ do_action:
     {
       failure_occurred= true;
       instance->send_failed= true;
-      instance->next_failed= failed_instances;
-      failed_instances= instance;
+      instance->next_failed= failed_list;
+      failed_list= instance;
 
       rc_arr_ret[i]= rc;
     }
     else
     {
-      if (sent_ever == false)
-      {
-        sent_ever= true;
-        min_sent_index= i;
-      }
-      max_sent_index= i;
+      insert_value(&sent_head, &sent_tail, i);
     }
   }
 
-  while (failed_instances != NULL)
-  {
-    memcached_server_write_instance_st current= failed_instances;
-    failed_instances= current->next_failed;
-    current->next_failed= NULL;
-    current->send_failed= false;
-  }
+  free_nodes(&send_needed_head, &send_needed_tail);
+  clear_failed_flags(&failed_list);
 
-  if (sent_ever == false)
+  if (sent_head == NULL)
   {
-    return BUILD_RETURN_VALUE();
+    return MEMCACHED_FAILURE;
   }
 
 #ifdef ENABLE_REPLICATION
-  bool switchover_needed_ever= false;
-  size_t min_switchover_needed_index= -1;
-  size_t max_switchover_needed_index= -1;
+  node *switchover_needed_head= NULL;
+  node *switchover_needed_tail= NULL;
 #endif
 
-  FOR_INDEX(min_sent_index, max_sent_index)
+  FOR_EACH_NODES (sent_head)
   {
-    if (rc_arr_ret[i] != MEMCACHED_MAXIMUM_RETURN)
-    {
-      continue;
-    }
-
+    size_t i= curr->value;
     FETCH_WRITE_INSTANCE_IF_NEEDED();
 
     if (instance->recv_failed == true)
@@ -755,50 +805,37 @@ do_action:
     else if (rc == MEMCACHED_SWITCHOVER or rc == MEMCACHED_REPL_SLAVE)
     {
       instance->switchover_state= return_t_to_switchover_state(rc);
-
-      if (switchover_needed_ever == false)
-      {
-        switchover_needed_ever= true;
-        min_switchover_needed_index= i;
-      }
-      max_switchover_needed_index= i;
+      insert_value(&switchover_needed_head, &switchover_needed_tail, i);
     }
 #endif
     else if (memcached_failed(rc_arr_ret[i]= rc))
     {
       failure_occurred= true;
       instance->recv_failed= true;
-      instance->next_failed= failed_instances;
-      failed_instances= instance;
+      instance->next_failed= failed_list;
+      failed_list= instance;
     }
   }
 
-  while (failed_instances != NULL)
-  {
-    memcached_server_write_instance_st current= failed_instances;
-    failed_instances= current->next_failed;
-    current->next_failed= NULL;
-    current->recv_failed= false;
-  }
+  free_nodes(&sent_head, &sent_tail);
+  clear_failed_flags(&failed_list);
 
   ptr->flags.bulked= false;
-
 #ifdef ENABLE_REPLICATION
-  if (switchover_needed_ever == false)
+  if (switchover_needed_head == NULL)
   {
     return BUILD_RETURN_VALUE();
   }
 
-  bool switchover_done_ever= false;
-  size_t min_switchover_done_index= -1;
-  size_t max_switchover_done_index= -1;
+  node *switchover_done_head= NULL;
+  node *switchover_done_tail= NULL;
 
-  bool switchover_failed_ever= false;
-  size_t min_switchover_failed_index= -1;
-  size_t max_switchover_failed_index= -1;
+  node *switchover_failed_head= NULL;
+  node *switchover_failed_tail= NULL;
 
-  FOR_INDEX(min_switchover_needed_index, max_switchover_needed_index)
+  FOR_EACH_NODES (switchover_needed_head)
   {
+    size_t i= curr->value;
     FETCH_WRITE_INSTANCE_IF_NEEDED();
 
     if (instance->switchover_state == MEMCACHED_SERVER_SWITCHOVER_NEEDED ||
@@ -810,26 +847,16 @@ do_action:
                     instance->hostname, instance->port, memcached_strerror(ptr, rc)));
       if (memcached_rgroup_switchover(ptr, instance) == true)
       {
-        if (switchover_done_ever == false)
-        {
-          switchover_done_ever= true;
-          min_switchover_done_index= i;
-        }
-        max_switchover_done_index= i;
-
         instance->switchover_state= MEMCACHED_SERVER_SWITCHOVER_DONE;
+        insert_value(&switchover_done_head, &switchover_done_tail, i);
       }
       else
       {
-        if (switchover_failed_ever== false)
-        {
-          switchover_failed_ever= true;
-          min_switchover_failed_index= i;
-        }
-        max_switchover_failed_index= i;
-
+        failure_occurred= true;
         rc_arr_ret[i]= MEMCACHED_FAILURE;
+
         instance->switchover_state= MEMCACHED_SERVER_SWITCHOVER_FAILED;
+        insert_value(&switchover_failed_head, &switchover_failed_tail, i);
       }
     }
     else if (instance->switchover_state == MEMCACHED_SERVER_SWITCHOVER_FAILED)
@@ -838,34 +865,25 @@ do_action:
     }
   }
 
-  unlikely (switchover_failed_ever)
+  unlikely (switchover_failed_head != NULL)
   {
-    FOR_INDEX(min_switchover_failed_index, max_switchover_failed_index)
+    FOR_EACH_NODES (switchover_failed_head)
     {
+      size_t i= curr->value;
       FETCH_WRITE_INSTANCE_IF_NEEDED();
 
-      if (instance->switchover_state == MEMCACHED_SERVER_SWITCHOVER_FAILED)
-      {
-        instance->switchover_state= MEMCACHED_SERVER_SWITCHOVER_DONE;
-      }
+      instance->switchover_state= MEMCACHED_SERVER_SWITCHOVER_DONE;
     }
+    free_nodes(&switchover_failed_head, &switchover_done_tail);
   }
 
-  if (switchover_done_ever)
+  if (switchover_done_head != NULL)
   {
-    min_index= min_switchover_done_index;
-    max_index= max_switchover_done_index;
-
-    min_sent_index= max_sent_index= -1;
-    min_switchover_needed_index= max_switchover_needed_index= -1;
-    min_switchover_done_index= max_switchover_done_index= -1;
-    min_switchover_failed_index= max_switchover_failed_index= -1;
-
-    sent_ever= switchover_needed_ever= switchover_done_ever= switchover_failed_ever= false;
+    send_needed_head= switchover_done_head;
+    send_needed_tail= switchover_done_tail;
     goto do_action;
   }
 #endif
-
   return BUILD_RETURN_VALUE();
 }
 
