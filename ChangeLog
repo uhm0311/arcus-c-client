@@ -1,3 +1,14 @@
+2024-08-22 [version 1.14.0]
+## 🐣 New Features
+* Add `mop upsert` API. #292
+* Add `mset`, `madd`, `mreplace`, `mprepend`, `mappend`, `mcas` API. #294 #305
+## 🐛 Bug Fixes
+* Fix buffer size when calling `snprintf()` with leading whitespace and integer value. #304
+## 📝 Documentation
+* Fix typo.
+## ✅ Testing
+* Cancel previous CI in progress when new commits are added. #296
+
 2024-02-22 [version 1.13.3]
 ## 🔧 Enhancements
 * Fix compile warnings on RHEL8 and MacOS.
